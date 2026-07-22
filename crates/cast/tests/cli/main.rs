@@ -113,6 +113,298 @@ Find more information in the book: https://getfoundry.sh/cast/overview
 "#]]);
 });
 
+casttest!(convert_is_grouped_in_root_help, |_prj, cmd| {
+    let output = cmd.arg("--help").assert_success().get_output().stdout_lossy();
+    assert!(
+        output.lines().any(|line| line.starts_with("  convert ")),
+        "missing `convert` in root help"
+    );
+    assert!(
+        !output.lines().any(|line| line.starts_with("  to-wei ")),
+        "legacy conversion commands should be hidden from root help"
+    );
+});
+
+casttest!(convert_help, |_prj, cmd| {
+    cmd.args(["convert", "--help"]).assert_success().stdout_eq(str![[r#"
+Convert between common data types and units
+
+Usage: cast[..] convert [OPTIONS] <COMMAND>
+
+Commands:
+  from-wei               Convert wei into an ETH amount [aliases: --from-wei, fw]
+  to-wei                 Convert an ETH amount to wei [aliases: --to-wei, tw, 2w]
+  to-unit                Convert an ETH amount into another unit (ether, gwei or wei) [aliases:
+                         --to-unit, tun, 2un]
+  from-fixed-point       Convert a fixed point number into an integer [aliases: --from-fix, ff]
+  to-fixed-point         Convert an integer into a fixed point number [aliases: --to-fix, tf, 2f]
+  format-units           Format a number from smallest unit to decimal with arbitrary decimals
+                         [aliases: --format-units, fun]
+  parse-units            Convert a number from decimal to smallest unit with arbitrary decimals
+                         [aliases: --parse-units, pun]
+  to-hex                 Converts a number of one base to another [aliases: --to-hex, th, 2h]
+  to-dec                 Converts a number of one base to decimal [aliases: --to-dec, td, 2d]
+  to-base                Converts a number of one base to another [aliases: --to-base, --to-radix,
+                         to-radix, tr, 2r]
+  to-int256              Convert a number to a hex-encoded int256 [aliases: --to-int256, ti, 2i]
+  to-uint256             Convert a number to a hex-encoded uint256 [aliases: --to-uint256, tu, 2u]
+  from-utf8              Convert UTF8 text to hex [aliases: --from-ascii, --from-utf8, from-ascii,
+                         fu, fa]
+  to-utf8                Convert hex data to a utf-8 string [aliases: --to-utf8, tu8, 2u8]
+  to-ascii               Convert hex data to an ASCII string [aliases: --to-ascii, tas, 2as]
+  from-bin               Convert binary data into hex data [aliases: --from-bin, from-binx, fb]
+  to-bytes32             Right-pads hex data to 32 bytes [aliases: --to-bytes32, tb, 2b]
+  to-hexdata             Normalize the input to lowercase, 0x-prefixed hex [aliases: --to-hexdata,
+                         thd, 2hd]
+  format-bytes32-string  Formats a string into bytes32 encoding [alias: --format-bytes32-string]
+  parse-bytes32-string   Parses a string from bytes32 encoding [alias: --parse-bytes32-string]
+  parse-bytes32-address  Parses a checksummed address from bytes32 encoding. [alias:
+                         --parse-bytes32-address]
+  to-check-sum-address   Convert an address to a checksummed format (EIP-55) [aliases:
+                         --to-checksum-address, --to-checksum, to-checksum, ta, 2a]
+  concat-hex             Concatenate hex strings [aliases: --concat-hex, ch]
+  pad                    Pads hex data to a specified length [alias: pd]
+  to-rlp                 RLP encodes hex data, or an array of hex data [alias: --to-rlp]
+  from-rlp               Decodes RLP hex-encoded data [alias: --from-rlp]
+  help                   Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -j, --threads <THREADS>
+          Number of threads to use. Specifying 0 defaults to the number of logical cores
+...
+          [alias: --jobs]
+
+Display options:
+      --color <COLOR>
+          The color of the log messages
+
+          Possible values:
+          - auto:   Intelligently guess whether to use color output (default)
+          - always: Force color output
+          - never:  Force disable color output
+
+      --json
+          Format log messages as JSON
+
+      --md
+          Format log messages as Markdown
+
+  -q, --quiet
+          Do not print log messages
+
+  -v, --verbosity...
+          Verbosity level of the log messages.
+...
+          Pass multiple times to increase the verbosity (e.g. -v, -vv, -vvv).
+...
+          Depending on the context the verbosity levels have different meanings.
+...
+          For example, the verbosity levels of the EVM are:
+          - 2 (-vv): Print logs for all tests.
+          - 3 (-vvv): Print execution traces for failing tests.
+          - 4 (-vvvv): Print execution traces for all tests, and setup traces for failing tests.
+          - 5 (-vvvvv): Print execution and setup traces for all tests, including storage changes
+          and
+            backtraces with line numbers.
+
+"#]]);
+});
+
+casttest!(convert_markdown_help, |_prj, cmd| {
+    let output = cmd.arg("--markdown-help").assert_success().get_output().stdout_lossy();
+    let conversions = [
+        "from-wei",
+        "to-wei",
+        "to-unit",
+        "from-fixed-point",
+        "to-fixed-point",
+        "format-units",
+        "parse-units",
+        "to-hex",
+        "to-dec",
+        "to-base",
+        "to-int256",
+        "to-uint256",
+        "from-utf8",
+        "to-utf8",
+        "to-ascii",
+        "from-bin",
+        "to-bytes32",
+        "to-hexdata",
+        "format-bytes32-string",
+        "parse-bytes32-string",
+        "parse-bytes32-address",
+        "to-check-sum-address",
+        "concat-hex",
+        "pad",
+        "to-rlp",
+        "from-rlp",
+    ];
+
+    assert!(output.contains("## `cast convert`"), "missing `cast convert` Markdown section");
+    for conversion in conversions {
+        assert!(
+            output.contains(&format!("## `cast convert {conversion}`")),
+            "missing nested Markdown section for `{conversion}`"
+        );
+        assert!(
+            !output.contains(&format!("## `cast {conversion}`")),
+            "hidden legacy `{conversion}` should not have its own Markdown section"
+        );
+    }
+    assert!(!output.contains("cast cast-"), "built command names leaked into Markdown paths");
+    assert!(!output.contains("## `cast help`"));
+    assert!(!output.contains("## `cast convert help`"));
+
+    let mut section_count = 0;
+    for section in output.split("## `").skip(1) {
+        let (heading, body) = section.split_once("`\n").unwrap();
+        let usage = body.split_once("**Usage:** `").unwrap().1.split_once("`\n").unwrap().0;
+        for line in usage.lines() {
+            let line = line.trim_start();
+            assert!(line.starts_with(heading), "bad Usage for `{heading}`: {line}");
+        }
+        section_count += 1;
+    }
+    assert!(section_count > 200, "expected the complete Cast command tree");
+    assert!(output.contains("**Usage:** `cast wallet remove --name <NAME>`"));
+    assert!(output.contains(
+        "**Usage:** `cast wallet session [OPTIONS]\n       cast wallet session <COMMAND>`"
+    ));
+
+    let create2 = output.split("## `cast create2`").nth(1).unwrap().split("\n## `").next().unwrap();
+    assert!(create2.contains("--threads"), "locally declared global option was removed");
+
+    let max_int = output.split("## `cast max-int`").nth(1).unwrap().split("\n## `").next().unwrap();
+    assert!(!max_int.contains("--json"), "root global option was duplicated");
+});
+
+casttest!(convert_errors, |_prj, cmd| {
+    cmd.args(["convert"]).assert_failure().stdout_eq(str![""]).stderr_eq(str![[r#"
+Convert between common data types and units
+
+Usage: cast[..] convert [OPTIONS] <COMMAND>
+
+Commands:
+...
+
+Options:
+...
+
+Display options:
+...
+
+"#]]);
+
+    cmd.cast_fuse().args(["convert", "wat"]).assert_failure().stdout_eq(str![""]).stderr_eq(str![
+        [r#"
+error: unrecognized subcommand 'wat'
+
+Usage: cast[..] convert [OPTIONS] <COMMAND>
+
+For more information, try '--help'.
+
+"#]
+    ]);
+});
+
+casttest!(convert_accepts_global_options_at_every_level, |_prj, cmd| {
+    let cases: &[&[&str]] = &[
+        &["--json", "convert", "to-wei", "1", "ether"],
+        &["convert", "--json", "to-wei", "1", "ether"],
+        &["convert", "to-wei", "1", "ether", "--json"],
+    ];
+
+    for &args in cases {
+        cmd.cast_fuse().args(args).assert_success().stdout_eq(str![[r#"
+{"schema_version":1,"success":true,"data":"1000000000000000000","errors":[],"warnings":[]}
+
+"#]]);
+    }
+});
+
+casttest!(convert_accepts_every_global_option_at_every_level, |_prj, cmd| {
+    let options: &[&[&str]] = &[
+        &["--color", "never"],
+        &["--md"],
+        &["--quiet"],
+        &["-v"],
+        &["--threads", "1"],
+        &["--jobs", "1"],
+    ];
+
+    for option in options {
+        let cases = [
+            option.iter().copied().chain(["convert", "to-wei", "1", "ether"]).collect::<Vec<_>>(),
+            ["convert"]
+                .into_iter()
+                .chain(option.iter().copied())
+                .chain(["to-wei", "1", "ether"])
+                .collect(),
+            ["convert", "to-wei", "1", "ether"].into_iter().chain(option.iter().copied()).collect(),
+        ];
+
+        for args in cases {
+            cmd.cast_fuse().args(args).assert_success();
+        }
+    }
+});
+
+casttest!(convert_bash_completions, |_prj, cmd| {
+    let output = cmd.args(["completions", "bash"]).assert_success().get_output().stdout_lossy();
+    assert!(output.contains("cast,to-wei)"), "legacy conversion completion must remain available");
+    assert!(output.contains("cast__subcmd__convert)"), "missing `convert` completion branch");
+    assert!(
+        output.contains("cast__subcmd__convert,to-wei)"),
+        "missing nested conversion completion"
+    );
+});
+
+casttest!(convert_completions_generate_for_every_shell, |_prj, cmd| {
+    for shell in ["bash", "zsh", "fish", "powershell", "elvish", "nushell"] {
+        let assert = cmd.cast_fuse().args(["completions", shell]).assert_success();
+        let output = assert.get_output().stdout_lossy();
+        let has_nested_to_wei = match shell {
+            "bash" => output.contains("cast__subcmd__convert,to-wei)"),
+            "zsh" => output.contains("_cast__subcmd__convert__subcmd__to-wei_commands"),
+            "fish" => output.lines().any(|line| {
+                line.contains("__fish_cast_using_subcommand convert")
+                    && line.contains(r#"-a "to-wei""#)
+            }),
+            "powershell" => output.contains("'cast;convert;to-wei' {"),
+            "elvish" => output.contains("&'cast;convert;to-wei'= {"),
+            "nushell" => output.contains(r#"export extern "cast convert to-wei" ["#),
+            _ => unreachable!(),
+        };
+        assert!(has_nested_to_wei, "missing nested `convert to-wei` in {shell} completions");
+    }
+});
+
+casttest!(convert_matches_legacy_execution, |_prj, cmd| {
+    let cases: &[&[&str]] = &[
+        &["to-wei", "1", "ether"],
+        &["from-utf8", "hello"],
+        &["to-hexdata", "0xAB:cd"],
+        &["to-check-sum-address", "0xd8da6bf26964af9d7eed9e03e53415d37aa96045"],
+        &["pad", "0xab", "--right", "--len", "4"],
+        &["to-rlp", "[\"0xaa\",\"0xbb\"]"],
+        &[
+            "parse-bytes32-address",
+            "0x000000000000000000000000d8da6bf26964af9d7eed9e03e53415d37aa96045",
+        ],
+    ];
+
+    for &args in cases {
+        let legacy = cmd.cast_fuse().args(args).assert_success().get_output().stdout.clone();
+        let nested =
+            cmd.cast_fuse().arg("convert").args(args).assert_success().get_output().stdout.clone();
+        assert_eq!(legacy, nested, "output differs for `{}`", args.join(" "));
+    }
+});
+
 // tests that the `cast block` command works correctly
 casttest!(latest_block, |_prj, cmd| {
     let eth_rpc_url = next_http_rpc_endpoint();

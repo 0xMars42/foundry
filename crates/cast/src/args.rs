@@ -1,7 +1,7 @@
 use crate::{
     Cast, SimpleCast,
     cmd::erc20::IERC20,
-    opts::{Cast as CastArgs, CastSubcommand, ToBaseArgs},
+    opts::{Cast as CastArgs, CastMarkdown, CastSubcommand, ToBaseArgs},
     traces::identifier::SignaturesIdentifier,
     tx::CastTxSender,
 };
@@ -42,7 +42,7 @@ use tempo_contracts::precompiles::{ITIP20ChannelReserve, TIP20_CHANNEL_RESERVE_A
 
 /// Run the `cast` command-line interface.
 pub fn run() -> Result<()> {
-    foundry_cli::opts::GlobalArgs::check_markdown_help::<CastArgs>();
+    foundry_cli::opts::GlobalArgs::check_markdown_help::<CastMarkdown>();
 
     setup()?;
 

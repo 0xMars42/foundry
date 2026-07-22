@@ -36,14 +36,26 @@ use crate::cmd::{
 use alloy_ens::NameOrAddress;
 use alloy_primitives::{Address, B256, Selector, U256};
 use alloy_rpc_types::BlockId;
-use clap::{ArgAction, Parser, Subcommand, ValueHint};
+use clap::{
+    ArgAction, ArgMatches, Args, Command, CommandFactory, Error, FromArgMatches, Parser,
+    Subcommand, ValueHint,
+};
 use eyre::Result;
 use foundry_cli::opts::{EtherscanOpts, GlobalArgs, RpcOpts};
 use foundry_common::version::{LONG_VERSION, SHORT_VERSION};
 use foundry_evm_networks::NetworkVariant;
-use std::{path::PathBuf, str::FromStr};
+use std::{collections::BTreeMap, path::PathBuf, str::FromStr};
 /// A Swiss Army knife for interacting with Ethereum applications from the command line.
-#[derive(Parser)]
+pub struct Cast {
+    /// Include the global arguments.
+    pub global: GlobalArgs,
+
+    pub cmd: CastSubcommand,
+}
+
+/// A Swiss Army knife for interacting with Ethereum applications from the command line.
+#[derive(Args)]
+#[group(id = "Cast")]
 #[command(
     name = "cast",
     version = SHORT_VERSION,
@@ -51,13 +63,264 @@ use std::{path::PathBuf, str::FromStr};
     after_help = "Find more information in the book: https://getfoundry.sh/cast/overview",
     next_display_order = None,
 )]
-pub struct Cast {
-    /// Include the global arguments.
+struct CastCli {
     #[command(flatten)]
-    pub global: GlobalArgs,
+    global: GlobalArgs,
 
     #[command(subcommand)]
-    pub cmd: CastSubcommand,
+    cmd: CastSubcommand,
+}
+
+pub(crate) struct CastMarkdown;
+
+impl FromArgMatches for Cast {
+    fn from_arg_matches(matches: &ArgMatches) -> std::result::Result<Self, Error> {
+        Self::from_arg_matches_mut(&mut matches.clone())
+    }
+
+    fn from_arg_matches_mut(matches: &mut ArgMatches) -> std::result::Result<Self, Error> {
+        let global = GlobalArgs::from_arg_matches_mut(matches)?;
+        let cmd = if matches.subcommand_name() == Some("convert") {
+            let (_, mut matches) = matches.remove_subcommand().expect("checked above");
+            CastSubcommand::from_arg_matches_mut(&mut matches)?
+        } else {
+            CastSubcommand::from_arg_matches_mut(matches)?
+        };
+        Ok(Self { global, cmd })
+    }
+
+    fn update_from_arg_matches(&mut self, matches: &ArgMatches) -> std::result::Result<(), Error> {
+        self.update_from_arg_matches_mut(&mut matches.clone())
+    }
+
+    fn update_from_arg_matches_mut(
+        &mut self,
+        matches: &mut ArgMatches,
+    ) -> std::result::Result<(), Error> {
+        self.global.update_from_arg_matches_mut(matches)?;
+        if matches.subcommand_name() == Some("convert") {
+            let (_, mut matches) = matches.remove_subcommand().expect("checked above");
+            self.cmd.update_from_arg_matches_mut(&mut matches)
+        } else {
+            self.cmd.update_from_arg_matches_mut(matches)
+        }
+    }
+}
+
+impl Args for Cast {
+    fn group_id() -> Option<clap::Id> {
+        <CastCli as Args>::group_id()
+    }
+
+    fn augment_args(command: Command) -> Command {
+        augment_cast_args(command, false, ConversionMaterialization::Deferred)
+    }
+
+    fn augment_args_for_update(command: Command) -> Command {
+        augment_cast_args(command, true, ConversionMaterialization::Deferred)
+    }
+}
+
+impl CommandFactory for Cast {
+    fn command() -> Command {
+        <Self as Args>::augment_args(Command::new("cast"))
+    }
+
+    fn command_for_update() -> Command {
+        <Self as Args>::augment_args_for_update(Command::new("cast"))
+    }
+}
+
+impl Parser for Cast {}
+
+impl CommandFactory for CastMarkdown {
+    fn command() -> Command {
+        prepare_markdown_command(augment_cast_args(
+            Command::new("cast"),
+            false,
+            ConversionMaterialization::Eager,
+        ))
+    }
+
+    fn command_for_update() -> Command {
+        prepare_markdown_command(augment_cast_args(
+            Command::new("cast"),
+            true,
+            ConversionMaterialization::Eager,
+        ))
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ConversionMaterialization {
+    Deferred,
+    Eager,
+}
+
+fn augment_cast_args(
+    command: Command,
+    for_update: bool,
+    materialization: ConversionMaterialization,
+) -> Command {
+    let command = if for_update {
+        <CastCli as Args>::augment_args_for_update(command)
+    } else {
+        <CastCli as Args>::augment_args(command)
+    };
+    group_conversion_commands(command, for_update, materialization)
+}
+
+fn prepare_markdown_command(command: Command) -> Command {
+    fn prepare(
+        command: Command,
+        parent_path: &[String],
+        inherited: &BTreeMap<String, clap::Arg>,
+    ) -> Command {
+        let mut path = parent_path.to_vec();
+        path.push(command.get_name().to_owned());
+
+        let mut globals = inherited.clone();
+        for arg in command.get_arguments().filter(|arg| arg.is_global_set()) {
+            globals.insert(arg.get_id().as_str().to_owned(), arg.clone().global(false));
+        }
+
+        let command =
+            command.mut_args(|arg| if arg.is_global_set() { arg.global(false) } else { arg });
+        let parent_prefix = if parent_path.is_empty() {
+            String::new()
+        } else {
+            format!("{} ", parent_path.join(" "))
+        };
+        let rendered_usage = command.clone().render_usage().to_string();
+        let rendered_usage = rendered_usage.strip_prefix("Usage: ").unwrap_or(&rendered_usage);
+        let command = if parent_prefix.is_empty() {
+            command
+        } else {
+            let mut lines = rendered_usage.lines();
+            let first_line = lines.next().unwrap_or_default();
+            let local_first_line = first_line.strip_prefix(&parent_prefix).unwrap_or(first_line);
+            let mut changed = local_first_line != first_line;
+            let mut usage = local_first_line.to_owned();
+            for line in rendered_usage.lines().skip(1) {
+                usage.push('\n');
+                let content = line.trim_start();
+                usage.push_str(&line[..line.len() - content.len()]);
+                if !content.is_empty() && !content.starts_with(&parent_prefix) {
+                    usage.push_str(&parent_prefix);
+                    changed = true;
+                }
+                usage.push_str(content);
+            }
+            if changed { command.override_usage(usage) } else { command }
+        };
+        command.mut_subcommands(|subcommand| {
+            let declared = subcommand
+                .get_arguments()
+                .map(|arg| arg.get_id().as_str().to_owned())
+                .collect::<Vec<_>>();
+            let inherited = globals
+                .iter()
+                .filter(|(id, _)| !declared.contains(id))
+                .map(|(_, arg)| arg.clone().hide(true));
+            prepare(subcommand.args(inherited), &path, &globals)
+        })
+    }
+
+    // The Markdown renderer visits each command in isolation, before Clap propagates global args.
+    prepare(command, &[], &BTreeMap::new())
+}
+
+const CONVERSION_COMMANDS: [&str; 26] = [
+    "from-wei",
+    "to-wei",
+    "to-unit",
+    "from-fixed-point",
+    "to-fixed-point",
+    "format-units",
+    "parse-units",
+    "to-hex",
+    "to-dec",
+    "to-base",
+    "to-int256",
+    "to-uint256",
+    "from-utf8",
+    "to-utf8",
+    "to-ascii",
+    "from-bin",
+    "to-bytes32",
+    "to-hexdata",
+    "format-bytes32-string",
+    "parse-bytes32-string",
+    "parse-bytes32-address",
+    "to-check-sum-address",
+    "concat-hex",
+    "pad",
+    "to-rlp",
+    "from-rlp",
+];
+
+fn is_conversion_command(name: &str) -> bool {
+    CONVERSION_COMMANDS.contains(&name)
+}
+
+fn add_conversion_commands(command: Command) -> Command {
+    let source = CastSubcommand::augment_subcommands(Command::new("cast"));
+    add_conversion_commands_from(command, &source)
+}
+
+fn add_conversion_commands_for_update(command: Command) -> Command {
+    let source = CastSubcommand::augment_subcommands_for_update(Command::new("cast"));
+    add_conversion_commands_from(command, &source)
+}
+
+fn add_conversion_commands_from(command: Command, source: &Command) -> Command {
+    command.subcommands(CONVERSION_COMMANDS.iter().enumerate().map(|(order, name)| {
+        source
+            .find_subcommand(name)
+            .unwrap_or_else(|| panic!("conversion command `{name}` is not registered"))
+            .clone()
+            .hide(false)
+            .display_order(order)
+    }))
+}
+
+fn group_conversion_commands(
+    command: Command,
+    for_update: bool,
+    materialization: ConversionMaterialization,
+) -> Command {
+    let convert_order = command
+        .get_subcommands()
+        .filter(|subcommand| is_conversion_command(subcommand.get_name()))
+        .map(Command::get_display_order)
+        .min()
+        .unwrap_or_default();
+    let convert = Command::new("convert")
+        .about("Convert between common data types and units")
+        .display_order(convert_order)
+        .subcommand_required(!for_update)
+        .arg_required_else_help(!for_update);
+    let convert = match materialization {
+        ConversionMaterialization::Deferred => {
+            // Keep the duplicate conversion subtree off the startup path of existing commands.
+            convert.defer(if for_update {
+                add_conversion_commands_for_update
+            } else {
+                add_conversion_commands
+            })
+        }
+        ConversionMaterialization::Eager => add_conversion_commands_from(convert, &command),
+    };
+
+    command
+        .mut_subcommands(|subcommand| {
+            if is_conversion_command(subcommand.get_name()) {
+                subcommand.hide(true)
+            } else {
+                subcommand
+            }
+        })
+        .subcommand(convert)
 }
 
 #[derive(Subcommand)]
@@ -1341,11 +1604,199 @@ mod tests {
     use super::*;
     use crate::SimpleCast;
     use alloy_rpc_types::{BlockNumberOrTag, RpcBlockHash};
-    use clap::CommandFactory;
 
     #[test]
     fn verify_cli() {
         Cast::command().debug_assert();
+    }
+
+    fn parse_cast_command(args: &[&str]) -> CastSubcommand {
+        Cast::try_parse_from(["cast"].into_iter().chain(args.iter().copied()))
+            .unwrap_or_else(|err| panic!("failed to parse `{}`: {err}", args.join(" ")))
+            .cmd
+    }
+
+    fn visible_command_tree(command: &Command) -> BTreeMap<String, Vec<String>> {
+        fn collect(command: &Command, parent: &str, commands: &mut BTreeMap<String, Vec<String>>) {
+            for subcommand in command
+                .get_subcommands()
+                .filter(|subcommand| !subcommand.is_hide_set() && subcommand.get_name() != "help")
+            {
+                let path = if parent.is_empty() {
+                    subcommand.get_name().to_owned()
+                } else {
+                    format!("{parent} {}", subcommand.get_name())
+                };
+                let mut aliases =
+                    subcommand.get_all_aliases().map(str::to_owned).collect::<Vec<_>>();
+                aliases.sort_unstable();
+                commands.insert(path.clone(), aliases);
+                collect(subcommand, &path, commands);
+            }
+        }
+
+        let mut commands = BTreeMap::new();
+        collect(command, "", &mut commands);
+        commands
+    }
+
+    #[test]
+    fn conversion_commands_are_grouped_without_changing_definitions() {
+        let mut command = Cast::command();
+        command.build();
+        let convert = command.find_subcommand("convert").unwrap();
+
+        assert!(convert.is_subcommand_required_set());
+        assert!(convert.is_arg_required_else_help_set());
+        let mut names = convert.get_subcommands().map(Command::get_name).collect::<Vec<_>>();
+        assert_eq!(names.pop(), Some("help"));
+        assert_eq!(names, CONVERSION_COMMANDS);
+
+        for name in CONVERSION_COMMANDS {
+            let legacy = command.find_subcommand(name).unwrap();
+            let nested = convert.find_subcommand(name).unwrap();
+
+            assert!(legacy.is_hide_set(), "`{name}` should be hidden at the root");
+            assert!(!nested.is_hide_set(), "`{name}` should be visible below `convert`");
+            assert_eq!(
+                legacy.get_all_aliases().collect::<Vec<_>>(),
+                nested.get_all_aliases().collect::<Vec<_>>(),
+                "aliases differ for `{name}`"
+            );
+        }
+    }
+
+    #[test]
+    fn markdown_command_matches_built_parser_tree() {
+        let mut deferred = Cast::command();
+        deferred.build();
+        let eager = CastMarkdown::command();
+
+        assert_eq!(visible_command_tree(&eager), visible_command_tree(&deferred));
+    }
+
+    #[test]
+    fn conversion_paths_and_aliases_parse_to_the_same_variants() {
+        let cases: &[(&str, &[&str])] = &[
+            ("from-wei", &["--from-wei", "fw"]),
+            ("to-wei", &["--to-wei", "tw", "2w"]),
+            ("to-unit", &["--to-unit", "tun", "2un"]),
+            ("from-fixed-point", &["--from-fix", "ff"]),
+            ("to-fixed-point", &["--to-fix", "tf", "2f"]),
+            ("format-units", &["--format-units", "fun"]),
+            ("parse-units", &["--parse-units", "pun"]),
+            ("to-hex", &["--to-hex", "th", "2h"]),
+            ("to-dec", &["--to-dec", "td", "2d"]),
+            ("to-base", &["--to-base", "--to-radix", "to-radix", "tr", "2r"]),
+            ("to-int256", &["--to-int256", "ti", "2i"]),
+            ("to-uint256", &["--to-uint256", "tu", "2u"]),
+            ("from-utf8", &["--from-ascii", "--from-utf8", "from-ascii", "fu", "fa"]),
+            ("to-utf8", &["--to-utf8", "tu8", "2u8"]),
+            ("to-ascii", &["--to-ascii", "tas", "2as"]),
+            ("from-bin", &["--from-bin", "from-binx", "fb"]),
+            ("to-bytes32", &["--to-bytes32", "tb", "2b"]),
+            ("to-hexdata", &["--to-hexdata", "thd", "2hd"]),
+            ("format-bytes32-string", &["--format-bytes32-string"]),
+            ("parse-bytes32-string", &["--parse-bytes32-string"]),
+            ("parse-bytes32-address", &["--parse-bytes32-address"]),
+            (
+                "to-check-sum-address",
+                &["--to-checksum-address", "--to-checksum", "to-checksum", "ta", "2a"],
+            ),
+            ("concat-hex", &["--concat-hex", "ch"]),
+            ("pad", &["pd"]),
+            ("to-rlp", &["--to-rlp"]),
+            ("from-rlp", &["--from-rlp"]),
+        ];
+        assert_eq!(cases.iter().map(|(name, _)| *name).collect::<Vec<_>>(), CONVERSION_COMMANDS);
+
+        for (canonical, aliases) in cases {
+            let expected = std::mem::discriminant(&parse_cast_command(&[canonical]));
+            for command in std::iter::once(*canonical).chain(aliases.iter().copied()) {
+                let legacy = parse_cast_command(&[command]);
+                let nested = parse_cast_command(&["convert", command]);
+
+                assert_eq!(
+                    std::mem::discriminant(&legacy),
+                    expected,
+                    "legacy alias `{command}` does not resolve to `{canonical}`"
+                );
+                assert_eq!(
+                    std::mem::discriminant(&nested),
+                    expected,
+                    "nested alias `{command}` does not resolve to `{canonical}`"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cast_retains_clap_update_behavior() {
+        #[derive(Parser)]
+        struct DerivedCast {
+            #[command(flatten)]
+            global: GlobalArgs,
+
+            #[command(subcommand)]
+            cmd: CastSubcommand,
+        }
+
+        fn assert_clap_traits<T: Args + CommandFactory + FromArgMatches + Parser>() {}
+        assert_clap_traits::<Cast>();
+        assert_eq!(<Cast as Args>::group_id().unwrap().as_str(), "Cast");
+
+        let update = Cast::command_for_update();
+        assert!(!update.is_subcommand_required_set());
+        assert!(!update.is_arg_required_else_help_set());
+        let convert = update.find_subcommand("convert").unwrap();
+        assert!(!convert.is_subcommand_required_set());
+        assert!(!convert.is_arg_required_else_help_set());
+
+        fn pad_state(command: &CastSubcommand) -> (Option<&str>, bool, bool, usize) {
+            match command {
+                CastSubcommand::Pad { data, right, left, len } => {
+                    (data.as_deref(), *right, *left, *len)
+                }
+                _ => panic!("expected `pad` command"),
+            }
+        }
+
+        let initial = ["cast", "pad", "0xaa", "--right", "--len", "4"];
+        let mut native = DerivedCast::try_parse_from(initial).unwrap();
+        let mut args = Cast::try_parse_from(initial).unwrap();
+
+        native.try_update_from(["cast", "pad", "0xbb"]).unwrap();
+        args.try_update_from(["cast", "convert", "pad", "0xbb"]).unwrap();
+        assert_eq!(pad_state(&args.cmd), pad_state(&native.cmd));
+
+        native.try_update_from(["cast", "--md"]).unwrap();
+        args.try_update_from(["cast", "--md"]).unwrap();
+        assert_eq!(args.global.shell().is_markdown(), native.global.shell().is_markdown());
+        assert_eq!(pad_state(&args.cmd), pad_state(&native.cmd));
+
+        native.try_update_from(["cast"]).unwrap();
+        args.try_update_from(["cast"]).unwrap();
+        assert_eq!(args.global.shell().is_markdown(), native.global.shell().is_markdown());
+        assert_eq!(pad_state(&args.cmd), pad_state(&native.cmd));
+
+        let mut matches = Cast::command()
+            .try_get_matches_from(["cast", "convert", "to-wei", "1", "ether"])
+            .unwrap();
+        let mut args = Cast::from_arg_matches_mut(&mut matches).unwrap();
+        assert!(matches.subcommand().is_none(), "mutable parsing must consume the subcommand");
+
+        let mut matches = Cast::command_for_update()
+            .try_get_matches_from(["cast", "convert", "from-wei", "1000000000000000000", "ether"])
+            .unwrap();
+        args.update_from_arg_matches_mut(&mut matches).unwrap();
+        assert!(matches.subcommand().is_none(), "mutable parsing must consume the subcommand");
+        match args.cmd {
+            CastSubcommand::FromWei { value, unit } => {
+                assert_eq!(value.as_deref(), Some("1000000000000000000"));
+                assert_eq!(unit, "ether");
+            }
+            _ => panic!("nested update did not select `from-wei`"),
+        }
     }
 
     #[test]
